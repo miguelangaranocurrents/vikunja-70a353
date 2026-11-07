@@ -610,7 +610,13 @@ function onEnter(event: KeyboardEvent) {
 }
 
 async function doCmd() {
-	if (results.value.length === 1 && results.value[0].items.length === 1) {
+	// With a command active the results are hidden and the query is the command's
+	// argument, so only a lone result outside of a command activates on Enter.
+	if (
+		selectedCmd.value === null &&
+		results.value.length === 1 &&
+		results.value[0].items.length === 1
+	) {
 		const result = results.value[0]
 		doAction(result.type, result.items[0])
 		openTaskAfterCreate = false

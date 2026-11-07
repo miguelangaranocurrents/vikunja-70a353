@@ -3,7 +3,7 @@ import {nextTick, toValue, type MaybeRefOrGetter, type Ref} from 'vue'
 import StarterKit from '@tiptap/starter-kit'
 import {createNodeFromContent, Extension, mergeAttributes, type Editor, type Extensions} from '@tiptap/core'
 import {Plugin, PluginKey} from '@tiptap/pm/state'
-import {Fragment} from '@tiptap/pm/model'
+import {Fragment, type Node as ProseMirrorNode, type Slice} from '@tiptap/pm/model'
 import {marked} from 'marked'
 
 import Link from '@tiptap/extension-link'
@@ -85,6 +85,70 @@ const SAFE_CSS_COLOR = /^(#[0-9a-f]{3,4}|#[0-9a-f]{6}|#[0-9a-f]{8}|rgba?\([\d\s.
 
 function safeCssColor(value: unknown): string | null {
 	return typeof value === 'string' && SAFE_CSS_COLOR.test(value.trim()) ? value.trim() : null
+}
+
+// Plain text for the clipboard keeps the markdown list markers, so a copied list
+// arrives as "- item" instead of bare lines and round-trips through the paste handler.
+function inlineText(node: ProseMirrorNode): string {
+	let text = ''
+	node.forEach(child => {
+		if (child.type.name === 'hardBreak') {
+			text += '\n'
+		} else if (child.isText) {
+			text += child.text ?? ''
+		} else {
+			text += inlineText(child)
+		}
+	})
+	return text
+}
+
+function isListBlock(node: ProseMirrorNode): boolean {
+	return node.type.name === 'bulletList' || node.type.name === 'orderedList' || node.type.name === 'taskList'
+}
+
+function blockText(node: ProseMirrorNode, depth = 0): string {
+	if (!isListBlock(node)) {
+		// Container blocks such as tables or blockquotes put each child on its own line.
+		if (node.isBlock && node.childCount > 0 && node.firstChild !== null && node.firstChild.isBlock) {
+			const lines: string[] = []
+			node.forEach(child => lines.push(blockText(child, depth)))
+			return lines.join('\n')
+		}
+
+		return inlineText(node)
+	}
+
+	const lines: string[] = []
+	let index = 0
+	node.forEach(item => {
+		index++
+		let marker = '- '
+		if (node.type.name === 'orderedList') {
+			marker = `${index}. `
+		} else if (node.type.name === 'taskList') {
+			marker = item.attrs.checked ? '- [x] ' : '- [ ] '
+		}
+
+		let firstBlock = true
+		item.forEach(block => {
+			if (isListBlock(block)) {
+				lines.push(blockText(block, depth + 1))
+				return
+			}
+			lines.push(`${'  '.repeat(depth)}${firstBlock ? marker : ''}${inlineText(block)}`)
+			firstBlock = false
+		})
+	})
+	return lines.join('\n')
+}
+
+function sliceToText(slice: Slice): string {
+	const lines: string[] = []
+	slice.content.forEach(child => {
+		lines.push(blockText(child))
+	})
+	return lines.join('\n')
 }
 
 const CustomTableCell = TableCell.extend({
@@ -285,6 +349,46 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 		},
 	})
 
+	const CopyHandler = Extension.create({
+		name: 'copyHandler',
+
+		addProseMirrorPlugins() {
+			return [
+				new Plugin({
+					key: new PluginKey('copyHandler'),
+					props: {
+						// ProseMirror's own copy/cut serialization reads the plain text from here.
+						clipboardTextSerializer: (slice: Slice) => sliceToText(slice),
+					},
+					view(editorView) {
+						// A capture listener beats ProseMirror's own copy handler to the event and
+						// keeps it from rewriting the plain text back to bare lines.
+						const onCopy = (event: Event) => {
+							const clipboardEvent = event as ClipboardEvent
+							if (!editorView.editable || editorView.state.selection.empty || !clipboardEvent.clipboardData) {
+								return
+							}
+
+							const slice = editorView.state.selection.content()
+							const {dom} = editorView.serializeForClipboard(slice)
+							clipboardEvent.clipboardData.setData('text/html', dom.innerHTML)
+							clipboardEvent.clipboardData.setData('text/plain', sliceToText(slice))
+							clipboardEvent.preventDefault()
+							event.stopImmediatePropagation()
+						}
+
+						editorView.dom.addEventListener('copy', onCopy, true)
+						return {
+							destroy() {
+								editorView.dom.removeEventListener('copy', onCopy, true)
+							},
+						}
+					},
+				}),
+			]
+		},
+	})
+
 	return [
 		// Starterkit:
 		StarterKit.configure({
@@ -405,5 +509,7 @@ export function createEditorExtensions(deps: EditorExtensionDeps): Extensions {
 		EmojiExtension,
 
 		PasteHandler,
+
+		CopyHandler,
 	]
 }
