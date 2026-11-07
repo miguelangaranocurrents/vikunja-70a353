@@ -20,8 +20,11 @@
 		<template #default>
 			<div class="kanban-view">
 				<div
+					ref="boardRef"
 					:class="{ 'is-loading': showInitialLoading, 'is-dragging': drag || dragBucket }"
 					class="kanban kanban-bucket-container loader-container"
+					@dragover.capture="scrollBoardTowardsPointer"
+					@mousemove.capture="scrollBoardTowardsPointer"
 				>
 					<BucketDraggable
 						v-bind="DRAG_OPTIONS"
@@ -383,6 +386,35 @@ const bucketLimitInputRef = ref<HTMLInputElement | null>(null)
 const drag = ref(false)
 const dragBucket = ref(false)
 const sourceBucket = ref(0)
+
+const boardRef = ref<HTMLElement | null>(null)
+
+// While dragging, the pointer stays inside the board, so edge proximity is measured
+// against the board itself and it scrolls towards buckets that are off screen.
+const DRAG_SCROLL_EDGE = 100
+const DRAG_SCROLL_STEP = 40
+
+function scrollBoardTowardsPointer(event: MouseEvent | DragEvent) {
+	if (!drag.value && !dragBucket.value) {
+		return
+	}
+
+	const board = boardRef.value
+	if (!board || (event.clientX === 0 && event.clientY === 0)) {
+		return
+	}
+
+	const rect = board.getBoundingClientRect()
+	if (event.clientY < rect.top || event.clientY > rect.bottom) {
+		return
+	}
+
+	if (event.clientX > rect.right - DRAG_SCROLL_EDGE) {
+		board.scrollLeft += DRAG_SCROLL_STEP
+	} else if (event.clientX < rect.left + DRAG_SCROLL_EDGE) {
+		board.scrollLeft -= DRAG_SCROLL_STEP
+	}
+}
 
 const showBucketDeleteModal = ref(false)
 const bucketToDelete = ref(0)
