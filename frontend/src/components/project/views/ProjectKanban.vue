@@ -23,8 +23,6 @@
 					ref="boardRef"
 					:class="{ 'is-loading': showInitialLoading, 'is-dragging': drag || dragBucket }"
 					class="kanban kanban-bucket-container loader-container"
-					@dragover.capture="scrollBoardTowardsPointer"
-					@mousemove.capture="scrollBoardTowardsPointer"
 				>
 					<BucketDraggable
 						v-bind="DRAG_OPTIONS"
@@ -304,7 +302,7 @@ import {
 	useUpdateBucketMutation,
 	useLoadBucketPageMutation,
 } from '@/client/queries/kanbanMutations'
-import {computed, nextTick, ref, watch, toRef} from 'vue'
+import {computed, nextTick, ref, watch, toRef, onMounted, onBeforeUnmount} from 'vue'
 import {useQuery, useQueryClient} from '@tanstack/vue-query'
 import {useRouter} from 'vue-router'
 import {useRouteQuery} from '@vueuse/router'
@@ -389,32 +387,80 @@ const sourceBucket = ref(0)
 
 const boardRef = ref<HTMLElement | null>(null)
 
-// While dragging, the pointer stays inside the board, so edge proximity is measured
-// against the board itself and it scrolls towards buckets that are off screen.
+// Drag events are throttled while the pointer hovers in place, so the last known
+// pointer position is remembered and the board keeps scrolling on a timer:
+// reaching a bucket that is off screen would otherwise stall at the board edge.
 const DRAG_SCROLL_EDGE = 100
-const DRAG_SCROLL_STEP = 40
+const DRAG_SCROLL_STEP = 25
+const DRAG_SCROLL_INTERVAL = 40
 
-function scrollBoardTowardsPointer(event: MouseEvent | DragEvent) {
-	if (!drag.value && !dragBucket.value) {
+let dragPointer: {x: number, y: number} | null = null
+let dragScrollTimer: ReturnType<typeof setInterval> | null = null
+
+function isBoardDragActive(): boolean {
+	// The chosen class covers drags the vue events do not report.
+	return drag.value || dragBucket.value || document.querySelector('.sortable-chosen') !== null
+}
+
+function stopBoardDragScroll() {
+	if (dragScrollTimer !== null) {
+		clearInterval(dragScrollTimer)
+		dragScrollTimer = null
+	}
+	dragPointer = null
+}
+
+function scrollBoardTowardsDragPointer() {
+	if (dragPointer === null) {
+		return
+	}
+
+	if (!isBoardDragActive()) {
+		stopBoardDragScroll()
 		return
 	}
 
 	const board = boardRef.value
-	if (!board || (event.clientX === 0 && event.clientY === 0)) {
+	if (board === null) {
 		return
 	}
 
 	const rect = board.getBoundingClientRect()
-	if (event.clientY < rect.top || event.clientY > rect.bottom) {
+	if (dragPointer.y < rect.top || dragPointer.y > rect.bottom) {
 		return
 	}
 
-	if (event.clientX > rect.right - DRAG_SCROLL_EDGE) {
+	if (dragPointer.x > rect.right - DRAG_SCROLL_EDGE) {
 		board.scrollLeft += DRAG_SCROLL_STEP
-	} else if (event.clientX < rect.left + DRAG_SCROLL_EDGE) {
+	} else if (dragPointer.x < rect.left + DRAG_SCROLL_EDGE) {
 		board.scrollLeft -= DRAG_SCROLL_STEP
 	}
 }
+
+function trackBoardDrag(event: MouseEvent | DragEvent) {
+	if ((event.clientX === 0 && event.clientY === 0) || !isBoardDragActive()) {
+		return
+	}
+
+	dragPointer = {x: event.clientX, y: event.clientY}
+	scrollBoardTowardsDragPointer()
+
+	if (dragScrollTimer === null) {
+		dragScrollTimer = setInterval(scrollBoardTowardsDragPointer, DRAG_SCROLL_INTERVAL)
+	}
+}
+
+onMounted(() => {
+	// Native drags only emit dragover, pointer driven drags only mousemove.
+	document.addEventListener('dragover', trackBoardDrag, true)
+	document.addEventListener('mousemove', trackBoardDrag, true)
+})
+
+onBeforeUnmount(() => {
+	document.removeEventListener('dragover', trackBoardDrag, true)
+	document.removeEventListener('mousemove', trackBoardDrag, true)
+	stopBoardDragScroll()
+})
 
 const showBucketDeleteModal = ref(false)
 const bucketToDelete = ref(0)
